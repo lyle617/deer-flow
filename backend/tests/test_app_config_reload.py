@@ -8,23 +8,52 @@ import yaml
 
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.app_config import get_app_config, reset_app_config
+from deerflow.sandbox.tools import (
+    _get_custom_mounts,
+    _get_skills_container_path,
+    _get_skills_host_path,
+)
 
 
-def _write_config(path: Path, *, model_name: str, supports_thinking: bool) -> None:
-    path.write_text(
-        yaml.safe_dump(
+def _write_config(
+    path: Path,
+    *,
+    model_name: str,
+    supports_thinking: bool,
+    skills_path: Path | None = None,
+    skills_container_path: str = "/mnt/skills",
+    mount_host_path: Path | None = None,
+    mount_container_path: str = "/mnt/shared",
+) -> None:
+    sandbox: dict[str, object] = {"use": "deerflow.sandbox.local:LocalSandboxProvider"}
+    if mount_host_path is not None:
+        sandbox["mounts"] = [
             {
-                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"},
-                "models": [
-                    {
-                        "name": model_name,
-                        "use": "langchain_openai:ChatOpenAI",
-                        "model": "gpt-test",
-                        "supports_thinking": supports_thinking,
-                    }
-                ],
+                "host_path": str(mount_host_path),
+                "container_path": mount_container_path,
+                "read_only": False,
             }
-        ),
+        ]
+
+    payload: dict[str, object] = {
+        "sandbox": sandbox,
+        "models": [
+            {
+                "name": model_name,
+                "use": "langchain_openai:ChatOpenAI",
+                "model": "gpt-test",
+                "supports_thinking": supports_thinking,
+            }
+        ],
+    }
+    if skills_path is not None:
+        payload["skills"] = {
+            "path": str(skills_path),
+            "container_path": skills_container_path,
+        }
+
+    path.write_text(
+        yaml.safe_dump(payload),
         encoding="utf-8",
     )
 
@@ -137,5 +166,52 @@ def test_get_app_config_resets_agents_api_config_when_section_removed(tmp_path, 
         reloaded = get_app_config()
         assert reloaded is not initial
         assert get_agents_api_config().enabled is False
+
+
+def test_sandbox_config_helpers_reload_when_config_path_changes(tmp_path, monkeypatch):
+    config_a = tmp_path / "config-a.yaml"
+    config_b = tmp_path / "config-b.yaml"
+    extensions_path = tmp_path / "extensions_config.json"
+    skills_a = tmp_path / "skills-a"
+    skills_b = tmp_path / "skills-b"
+    mount_a = tmp_path / "mount-a"
+    mount_b = tmp_path / "mount-b"
+    skills_a.mkdir()
+    skills_b.mkdir()
+    mount_a.mkdir()
+    mount_b.mkdir()
+    _write_extensions_config(extensions_path)
+    _write_config(
+        config_a,
+        model_name="model-a",
+        supports_thinking=False,
+        skills_path=skills_a,
+        skills_container_path="/mnt/skills-a",
+        mount_host_path=mount_a,
+        mount_container_path="/mnt/mount-a",
+    )
+    _write_config(
+        config_b,
+        model_name="model-b",
+        supports_thinking=True,
+        skills_path=skills_b,
+        skills_container_path="/mnt/skills-b",
+        mount_host_path=mount_b,
+        mount_container_path="/mnt/mount-b",
+    )
+
+    monkeypatch.setenv("DEER_FLOW_EXTENSIONS_CONFIG_PATH", str(extensions_path))
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_a))
+    reset_app_config()
+
+    try:
+        assert _get_skills_host_path() == str(skills_a.resolve())
+        assert _get_skills_container_path() == "/mnt/skills-a"
+        assert [mount.container_path for mount in _get_custom_mounts()] == ["/mnt/mount-a"]
+
+        monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_b))
+        assert _get_skills_host_path() == str(skills_b.resolve())
+        assert _get_skills_container_path() == "/mnt/skills-b"
+        assert [mount.container_path for mount in _get_custom_mounts()] == ["/mnt/mount-b"]
     finally:
         reset_app_config()

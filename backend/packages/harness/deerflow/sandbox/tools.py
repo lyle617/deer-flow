@@ -1,3 +1,4 @@
+import os
 import posixpath
 import re
 import shlex
@@ -39,6 +40,38 @@ _DEFAULT_GREP_MAX_RESULTS = 100
 _MAX_GREP_MAX_RESULTS = 500
 
 
+def _current_config_cache_signature() -> tuple[str | None, str | None, float | None]:
+    """Return a lightweight signature for config-derived sandbox path caches."""
+    config_path = os.getenv("DEER_FLOW_CONFIG_PATH")
+    config_mtime = None
+    if config_path:
+        try:
+            config_mtime = Path(config_path).stat().st_mtime
+        except OSError:
+            config_mtime = None
+    return (os.getenv("DEER_FLOW_HOME"), config_path, config_mtime)
+
+
+def clear_config_derived_path_caches() -> None:
+    """Clear process-level caches derived from AppConfig / Paths.
+
+    These helpers memoize config-backed values for sandbox path translation.
+    When ``DEER_FLOW_CONFIG_PATH`` or related runtime config changes within the
+    same Python process, the caches must be invalidated so later tool calls use
+    the new skills path, mounts, and ACP workspace roots.
+    """
+    for helper in (
+        _get_skills_container_path,
+        _get_skills_host_path,
+        _get_custom_mounts,
+        _get_acp_workspace_host_path,
+    ):
+        if hasattr(helper, "_cached"):
+            delattr(helper, "_cached")
+        if hasattr(helper, "_cache_signature"):
+            delattr(helper, "_cache_signature")
+
+
 def _get_skills_container_path() -> str:
     """Get the skills container path from config, with fallback to default.
 
@@ -46,14 +79,17 @@ def _get_skills_container_path() -> str:
     fails the default is returned *without* caching so that a later call can
     pick up the real value once the config is available.
     """
+    current_signature = _current_config_cache_signature()
     cached = getattr(_get_skills_container_path, "_cached", None)
-    if cached is not None:
+    cached_signature = getattr(_get_skills_container_path, "_cache_signature", None)
+    if cached is not None and cached_signature == current_signature:
         return cached
     try:
         from deerflow.config import get_app_config
 
         value = get_app_config().skills.container_path
         _get_skills_container_path._cached = value  # type: ignore[attr-defined]
+        _get_skills_container_path._cache_signature = current_signature  # type: ignore[attr-defined]
         return value
     except Exception:
         return _DEFAULT_SKILLS_CONTAINER_PATH
@@ -67,8 +103,10 @@ def _get_skills_host_path() -> str | None:
     next call so that a transiently unavailable skills directory does not
     permanently disable skills access.
     """
+    current_signature = _current_config_cache_signature()
     cached = getattr(_get_skills_host_path, "_cached", None)
-    if cached is not None:
+    cached_signature = getattr(_get_skills_host_path, "_cache_signature", None)
+    if cached is not None and cached_signature == current_signature:
         return cached
     try:
         from deerflow.config import get_app_config
@@ -78,6 +116,7 @@ def _get_skills_host_path() -> str | None:
         if skills_path.exists():
             value = str(skills_path)
             _get_skills_host_path._cached = value  # type: ignore[attr-defined]
+            _get_skills_host_path._cache_signature = current_signature  # type: ignore[attr-defined]
             return value
     except Exception:
         pass
@@ -126,8 +165,10 @@ def _get_custom_mounts():
     fails an empty list is returned *without* caching so that a later call can
     pick up the real value once the config is available.
     """
+    current_signature = _current_config_cache_signature()
     cached = getattr(_get_custom_mounts, "_cached", None)
-    if cached is not None:
+    cached_signature = getattr(_get_custom_mounts, "_cache_signature", None)
+    if cached is not None and cached_signature == current_signature:
         return cached
     try:
         from pathlib import Path
@@ -142,6 +183,7 @@ def _get_custom_mounts():
             # by host_path.exists().
             mounts = [m for m in config.sandbox.mounts if Path(m.host_path).exists()]
         _get_custom_mounts._cached = mounts  # type: ignore[attr-defined]
+        _get_custom_mounts._cache_signature = current_signature  # type: ignore[attr-defined]
         return mounts
     except Exception:
         # If config loading fails, return an empty list without caching so that
@@ -208,8 +250,10 @@ def _get_acp_workspace_host_path(thread_id: str | None = None) -> str | None:
             pass
         return None
 
+    current_signature = _current_config_cache_signature()
     cached = getattr(_get_acp_workspace_host_path, "_cached", None)
-    if cached is not None:
+    cached_signature = getattr(_get_acp_workspace_host_path, "_cache_signature", None)
+    if cached is not None and cached_signature == current_signature:
         return cached
     try:
         from deerflow.config.paths import get_paths
@@ -218,6 +262,7 @@ def _get_acp_workspace_host_path(thread_id: str | None = None) -> str | None:
         if host_path.exists():
             value = str(host_path)
             _get_acp_workspace_host_path._cached = value  # type: ignore[attr-defined]
+            _get_acp_workspace_host_path._cache_signature = current_signature  # type: ignore[attr-defined]
             return value
     except Exception:
         pass

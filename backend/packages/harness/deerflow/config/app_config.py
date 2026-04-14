@@ -294,6 +294,12 @@ def _load_and_cache_app_config(config_path: str | None = None) -> AppConfig:
     _app_config_path = resolved_path
     _app_config_mtime = _get_config_mtime(resolved_path)
     _app_config_is_custom = False
+    try:
+        from deerflow.sandbox.tools import clear_config_derived_path_caches
+
+        clear_config_derived_path_caches()
+    except Exception:
+        logger.exception("Failed to clear sandbox config-derived path caches after AppConfig reload")
     return _app_config
 
 
@@ -357,6 +363,12 @@ def reset_app_config() -> None:
     _app_config_path = None
     _app_config_mtime = None
     _app_config_is_custom = False
+    try:
+        from deerflow.sandbox.tools import clear_config_derived_path_caches
+
+        clear_config_derived_path_caches()
+    except Exception:
+        logger.exception("Failed to clear sandbox config-derived path caches during AppConfig reset")
 
 
 def set_app_config(config: AppConfig) -> None:
@@ -372,6 +384,12 @@ def set_app_config(config: AppConfig) -> None:
     _app_config_path = None
     _app_config_mtime = None
     _app_config_is_custom = True
+    try:
+        from deerflow.sandbox.tools import clear_config_derived_path_caches
+
+        clear_config_derived_path_caches()
+    except Exception:
+        logger.exception("Failed to clear sandbox config-derived path caches during AppConfig override")
 
 
 def peek_current_app_config() -> AppConfig | None:
