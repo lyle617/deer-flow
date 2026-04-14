@@ -166,6 +166,8 @@ def test_get_app_config_resets_agents_api_config_when_section_removed(tmp_path, 
         reloaded = get_app_config()
         assert reloaded is not initial
         assert get_agents_api_config().enabled is False
+    finally:
+        reset_app_config()
 
 
 def test_sandbox_config_helpers_reload_when_config_path_changes(tmp_path, monkeypatch):
