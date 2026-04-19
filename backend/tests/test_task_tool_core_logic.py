@@ -40,6 +40,17 @@ def _make_runtime() -> SimpleNamespace:
     )
 
 
+def _make_tomato_runtime() -> SimpleNamespace:
+    runtime = _make_runtime()
+    runtime.context = {
+        **runtime.context,
+        "tomato_role_id": "fanqie_continuity_editor",
+        "tomato_tool_groups": ["file:read", "file:write", "retrieval:local"],
+        "tomato_disable_mcp_for_subagents": True,
+    }
+    return runtime
+
+
 def _make_subagent_config() -> SubagentConfig:
     return SubagentConfig(
         name="general-purpose",
@@ -73,6 +84,14 @@ def _run_task_tool(**kwargs) -> str:
     return task_tool_module.task_tool.func(**kwargs)
 
 
+def _run_task_tool_sync(**kwargs) -> str:
+    """Execute the sync path explicitly to guard DeerFlowClient.stream()."""
+    func = getattr(task_tool_module.task_tool, "func", None)
+    if func is None:
+        raise AssertionError("task_tool does not expose a sync func")
+    return func(**kwargs)
+
+
 async def _no_sleep(_: float) -> None:
     return None
 
@@ -80,6 +99,10 @@ async def _no_sleep(_: float) -> None:
 class _DummyScheduledTask:
     def add_done_callback(self, _callback):
         return None
+
+
+def test_task_tool_exposes_sync_func_for_sync_stream_runtime():
+    assert getattr(task_tool_module.task_tool, "func", None) is not None
 
 
 def test_task_tool_returns_error_for_unknown_subagent(monkeypatch):
@@ -164,7 +187,7 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     assert captured["task_id"] == "tc-123"
     assert captured["executor_kwargs"]["thread_id"] == "thread-1"
     assert captured["executor_kwargs"]["parent_model"] == "ark-model"
-    assert captured["executor_kwargs"]["config"].max_turns == 7
+    assert captured["executor_kwargs"]["config"].max_turns == 60
     assert "Skills Appendix" in captured["executor_kwargs"]["config"].system_prompt
 
     get_available_tools.assert_called_once_with(model_name="ark-model", subagent_enabled=False)
@@ -172,6 +195,179 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     event_types = [e["type"] for e in events]
     assert event_types == ["task_started", "task_running", "task_running", "task_completed"]
     assert events[-1]["result"] == "all done"
+
+
+def test_task_tool_sync_func_emits_running_and_completed_events(monkeypatch):
+    config = _make_subagent_config()
+    runtime = _make_runtime()
+    events = []
+    captured = {}
+    get_available_tools = MagicMock(return_value=["tool-a", "tool-b"])
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            captured["prompt"] = prompt
+            captured["task_id"] = task_id
+            return task_id or "generated-task-id"
+
+    responses = iter(
+        [
+            _make_result(FakeSubagentStatus.RUNNING, ai_messages=[{"id": "m1", "content": "phase-1"}]),
+            _make_result(
+                FakeSubagentStatus.COMPLETED,
+                ai_messages=[{"id": "m1", "content": "phase-1"}, {"id": "m2", "content": "phase-2"}],
+                result="all done",
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "Skills Appendix")
+    monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: next(responses))
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", get_available_tools)
+
+    output = _run_task_tool_sync(
+        runtime=runtime,
+        description="运行子任务",
+        prompt="collect diagnostics",
+        subagent_type="general-purpose",
+        tool_call_id="tc-123",
+        max_turns=7,
+    )
+
+    assert output == "Task Succeeded. Result: all done"
+    assert captured["prompt"] == "collect diagnostics"
+    assert captured["task_id"] == "tc-123"
+    assert captured["executor_kwargs"]["thread_id"] == "thread-1"
+    assert captured["executor_kwargs"]["parent_model"] == "ark-model"
+    assert captured["executor_kwargs"]["config"].max_turns == 60
+    get_available_tools.assert_called_once_with(model_name="ark-model", subagent_enabled=False)
+
+    event_types = [e["type"] for e in events]
+    assert event_types == ["task_started", "task_running", "task_running", "task_completed"]
+    assert events[-1]["result"] == "all done"
+
+
+def test_task_tool_does_not_clamp_bash_max_turns(monkeypatch):
+    config = _make_subagent_config()
+    captured = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
+    monkeypatch.setattr(task_tool_module, "is_host_bash_allowed", lambda: True)
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: lambda _: None)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **_: [])
+
+    execution = task_tool_module._prepare_task_execution(
+        runtime=_make_runtime(),
+        description="运行 bash 子任务",
+        prompt="echo ok",
+        subagent_type="bash",
+        tool_call_id="tc-bash",
+        max_turns=7,
+    )
+
+    assert not isinstance(execution, str)
+    assert captured["executor_kwargs"]["config"].max_turns == 7
+
+
+def test_task_tool_tomato_subagent_inherits_parent_tool_groups_without_mcp(monkeypatch):
+    config = _make_subagent_config()
+    captured = {}
+    get_available_tools = MagicMock(return_value=["read_file", "sirchmunk_search"])
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: lambda _: None)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", get_available_tools)
+
+    execution = task_tool_module._prepare_task_execution(
+        runtime=_make_tomato_runtime(),
+        description="复核争议",
+        prompt="check claims",
+        subagent_type="general-purpose",
+        tool_call_id="tc-tomato",
+        max_turns=None,
+    )
+
+    assert not isinstance(execution, str)
+    get_available_tools.assert_called_once_with(
+        model_name="ark-model",
+        groups=["file:read", "file:write", "retrieval:local"],
+        include_mcp=False,
+        subagent_enabled=False,
+    )
+    assert captured["executor_kwargs"]["tools"] == ["read_file", "sirchmunk_search"]
+
+
+def test_task_tool_marks_recursion_limit_failure_recoverable(monkeypatch):
+    config = _make_subagent_config()
+    events = []
+    responses = iter(
+        [
+            _make_result(FakeSubagentStatus.RUNNING),
+            _make_result(
+                FakeSubagentStatus.FAILED,
+                error=(
+                    "Recursion limit of 20 reached without hitting a stop condition. "
+                    "For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT"
+                ),
+            ),
+        ]
+    )
+
+    class DummyExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute_async(self, prompt, task_id=None):
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
+    monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _: next(responses))
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", MagicMock(return_value=[]))
+
+    output = _run_task_tool(
+        runtime=_make_runtime(),
+        description="复核争议",
+        prompt="check claims",
+        subagent_type="general-purpose",
+        tool_call_id="tc-recursion",
+        max_turns=20,
+    )
+
+    assert "Task failed. recoverable_subagent_recursion_limit" in output
+    assert "continue without retrying the same subagent prompt" in output
+    assert events[-1]["type"] == "task_failed"
+    assert events[-1]["failure_kind"] == "recoverable_subagent_recursion_limit"
 
 
 def test_task_tool_returns_failed_message(monkeypatch):
