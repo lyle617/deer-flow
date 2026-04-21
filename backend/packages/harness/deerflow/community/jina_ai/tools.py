@@ -1,6 +1,6 @@
 import asyncio
 
-from langchain.tools import tool
+from langchain_core.tools import StructuredTool
 
 from deerflow.community.jina_ai.jina_client import JinaClient
 from deerflow.config import get_app_config
@@ -9,8 +9,7 @@ from deerflow.utils.readability import ReadabilityExtractor
 readability_extractor = ReadabilityExtractor()
 
 
-@tool("web_fetch", parse_docstring=True)
-async def web_fetch_tool(url: str) -> str:
+async def _fetch_web_markdown(url: str) -> str:
     """Fetch the contents of a web page at a given URL.
     Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
     This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
@@ -30,3 +29,28 @@ async def web_fetch_tool(url: str) -> str:
         return html_content
     article = await asyncio.to_thread(readability_extractor.extract_article, html_content)
     return article.to_markdown()[:4096]
+
+
+def _run_web_fetch_sync(url: str) -> str:
+    """Fetch the contents of a web page at a given URL.
+    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
+    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
+    Do NOT add www. to URLs that do NOT have them.
+    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+
+    Args:
+        url: The URL to fetch the contents of.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_fetch_web_markdown(url))
+    raise RuntimeError("web_fetch sync invocation is not supported inside an active event loop; use the async path instead.")
+
+
+web_fetch_tool = StructuredTool.from_function(
+    func=_run_web_fetch_sync,
+    coroutine=_fetch_web_markdown,
+    name="web_fetch",
+    parse_docstring=True,
+)

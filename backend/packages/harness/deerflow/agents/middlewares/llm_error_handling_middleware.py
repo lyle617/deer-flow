@@ -39,6 +39,20 @@ _BUSY_PATTERNS = (
     "稍后重试",
     "请稍后重试",
 )
+_TRANSIENT_PATTERNS = (
+    "aborted",
+    "connection aborted",
+    "connection closed",
+    "connection reset",
+    "network error",
+    "remote protocol error",
+    "server disconnected",
+    "socket hang up",
+    "stream interrupted",
+    "stream terminated",
+    "timed out",
+    "timeout",
+)
 _QUOTA_PATTERNS = (
     "insufficient_quota",
     "quota",
@@ -163,6 +177,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         }:
             return True, "transient"
         if status_code in _RETRIABLE_STATUS_CODES:
+            return True, "transient"
+        if _matches_any(lowered, _TRANSIENT_PATTERNS):
             return True, "transient"
         if _matches_any(lowered, _BUSY_PATTERNS):
             return True, "busy"

@@ -138,6 +138,17 @@ async def test_build_invoke_tool_description_and_unknown_agent_error():
     assert result == "Error: Unknown agent 'missing'. Available: codex, claude_code"
 
 
+def test_build_invoke_tool_exposes_sync_func():
+    tool = build_invoke_acp_agent_tool(
+        {
+            "codex": ACPAgentConfig(command="codex-acp", description="Codex CLI"),
+        }
+    )
+
+    assert tool.func is not None
+    assert tool.func(agent="missing", prompt="do work") == "Error: Unknown agent 'missing'. Available: codex"
+
+
 def test_get_work_dir_uses_base_dir_when_no_thread_id(monkeypatch, tmp_path):
     """_get_work_dir(None) uses {base_dir}/acp-workspace/ (global fallback)."""
     from deerflow.config import paths as paths_module

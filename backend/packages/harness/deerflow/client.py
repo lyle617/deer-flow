@@ -117,8 +117,10 @@ class DeerFlowClient:
         *,
         model_name: str | None = None,
         thinking_enabled: bool = True,
+        reasoning_effort: str | None = None,
         subagent_enabled: bool = False,
         plan_mode: bool = False,
+        max_concurrent_subagents: int = 3,
         agent_name: str | None = None,
         available_skills: set[str] | None = None,
         middlewares: Sequence[AgentMiddleware] | None = None,
@@ -134,8 +136,10 @@ class DeerFlowClient:
                 Without a checkpointer, each call is stateless.
             model_name: Override the default model name from config.
             thinking_enabled: Enable model's extended thinking.
+            reasoning_effort: Override reasoning effort when the model supports it.
             subagent_enabled: Enable subagent delegation.
             plan_mode: Enable TodoList middleware for plan mode.
+            max_concurrent_subagents: Maximum concurrent subagents exposed in prompt/runtime.
             agent_name: Name of the agent to use.
             available_skills: Optional set of skill names to make available. If None (default), all scanned skills are available.
             middlewares: Optional list of custom middlewares to inject into the agent.
@@ -150,8 +154,10 @@ class DeerFlowClient:
         self._checkpointer = checkpointer
         self._model_name = model_name
         self._thinking_enabled = thinking_enabled
+        self._reasoning_effort = reasoning_effort
         self._subagent_enabled = subagent_enabled
         self._plan_mode = plan_mode
+        self._max_concurrent_subagents = max_concurrent_subagents
         self._agent_name = agent_name
         self._available_skills = set(available_skills) if available_skills is not None else None
         self._middlewares = list(middlewares) if middlewares else []
@@ -198,8 +204,13 @@ class DeerFlowClient:
             "thread_id": thread_id,
             "model_name": overrides.get("model_name", self._model_name),
             "thinking_enabled": overrides.get("thinking_enabled", self._thinking_enabled),
+            "reasoning_effort": overrides.get("reasoning_effort", self._reasoning_effort),
             "is_plan_mode": overrides.get("plan_mode", self._plan_mode),
             "subagent_enabled": overrides.get("subagent_enabled", self._subagent_enabled),
+            "max_concurrent_subagents": overrides.get(
+                "max_concurrent_subagents",
+                self._max_concurrent_subagents,
+            ),
         }
         return RunnableConfig(
             configurable=configurable,
@@ -212,8 +223,10 @@ class DeerFlowClient:
         key = (
             cfg.get("model_name"),
             cfg.get("thinking_enabled"),
+            cfg.get("reasoning_effort"),
             cfg.get("is_plan_mode"),
             cfg.get("subagent_enabled"),
+            cfg.get("max_concurrent_subagents", 3),
             self._agent_name,
             frozenset(self._available_skills) if self._available_skills is not None else None,
         )
@@ -222,12 +235,17 @@ class DeerFlowClient:
             return
 
         thinking_enabled = cfg.get("thinking_enabled", True)
+        reasoning_effort = cfg.get("reasoning_effort")
         model_name = cfg.get("model_name")
         subagent_enabled = cfg.get("subagent_enabled", False)
         max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
 
         kwargs: dict[str, Any] = {
-            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
+            "model": create_chat_model(
+                name=model_name,
+                thinking_enabled=thinking_enabled,
+                reasoning_effort=reasoning_effort,
+            ),
             "tools": self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled),
             "middleware": _build_middlewares(config, model_name=model_name, agent_name=self._agent_name, custom_middlewares=self._middlewares),
             "system_prompt": apply_prompt_template(
@@ -248,7 +266,14 @@ class DeerFlowClient:
 
         self._agent = create_agent(**kwargs)
         self._agent_config_key = key
-        logger.info("Agent created: agent_name=%s, model=%s, thinking=%s", self._agent_name, model_name, thinking_enabled)
+        logger.info(
+            "Agent created: agent_name=%s, model=%s, thinking=%s, reasoning_effort=%s, max_concurrent_subagents=%s",
+            self._agent_name,
+            model_name,
+            thinking_enabled,
+            reasoning_effort,
+            max_concurrent_subagents,
+        )
 
     @staticmethod
     def _get_tools(*, model_name: str | None, subagent_enabled: bool):
@@ -547,6 +572,7 @@ class DeerFlowClient:
         if thread_id is None:
             thread_id = str(uuid.uuid4())
 
+        runtime_context = kwargs.pop("runtime_context", None)
         config = self._get_runnable_config(thread_id, **kwargs)
         self._ensure_agent(config)
 
@@ -554,6 +580,8 @@ class DeerFlowClient:
         context = {"thread_id": thread_id}
         if self._agent_name:
             context["agent_name"] = self._agent_name
+        if isinstance(runtime_context, dict):
+            context.update(runtime_context)
 
         seen_ids: set[str] = set()
         # Cross-mode handoff: ids already streamed via LangGraph ``messages``

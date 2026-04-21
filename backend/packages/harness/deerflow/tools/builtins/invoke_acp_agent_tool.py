@@ -1,5 +1,6 @@
 """Built-in tool for invoking external ACP-compatible agents."""
 
+import asyncio
 import logging
 import os
 import shutil
@@ -248,7 +249,11 @@ def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
             logger.error("ACP agent '%s' invocation failed: %s", agent, e)
             return _format_invocation_error(agent, cmd, e)
 
+    def _invoke_sync(agent: str, prompt: str, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
+        return asyncio.run(_invoke(agent=agent, prompt=prompt, config=config))
+
     return StructuredTool.from_function(
+        func=_invoke_sync,
         name="invoke_acp_agent",
         description=description,
         coroutine=_invoke,

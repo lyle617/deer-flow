@@ -177,6 +177,22 @@ async def test_web_fetch_tool_returns_markdown_on_success(monkeypatch):
     assert not result.startswith("Error:")
 
 
+def test_web_fetch_tool_supports_sync_invoke(monkeypatch):
+    """Test that sync invoke works for embedded DeerFlow client execution."""
+
+    async def mock_crawl(self, url, **kwargs):
+        return "<html><body><p>sync path</p></body></html>"
+
+    mock_config = MagicMock()
+    mock_config.get_tool_config.return_value = None
+    monkeypatch.setattr("deerflow.community.jina_ai.tools.get_app_config", lambda: mock_config)
+    monkeypatch.setattr(JinaClient, "crawl", mock_crawl)
+
+    result = web_fetch_tool.invoke({"url": "https://example.com"})
+    assert "sync path" in result
+    assert not result.startswith("Error:")
+
+
 @pytest.mark.anyio
 async def test_web_fetch_tool_offloads_extraction_to_thread(monkeypatch):
     """Test that readability extraction is offloaded via asyncio.to_thread to avoid blocking the event loop."""
