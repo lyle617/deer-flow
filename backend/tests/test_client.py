@@ -236,7 +236,7 @@ class TestStream:
         assert events[-1].type == "end"
 
     def test_context_propagation(self, client):
-        """stream() passes agent_name to the context."""
+        """stream() injects runtime context without passing stream context kwarg."""
         agent = _make_agent_mock([{"messages": [AIMessage(content="ok", id="ai-1")]}])
 
         client._agent_name = "test-agent-1"
@@ -246,11 +246,15 @@ class TestStream:
         ):
             list(client.stream("hi", thread_id="t1"))
 
-        # Verify context passed to agent.stream
+        # Verify context is available to runtime middlewares without using
+        # agent.stream(context=...), which triggers Pydantic serializer warnings
+        # in current LangGraph/Pydantic combinations.
         agent.stream.assert_called_once()
         call_kwargs = agent.stream.call_args.kwargs
-        assert call_kwargs["context"]["thread_id"] == "t1"
-        assert call_kwargs["context"]["agent_name"] == "test-agent-1"
+        assert "context" not in call_kwargs
+        runtime = call_kwargs["config"]["configurable"]["__pregel_runtime"]
+        assert runtime.context["thread_id"] == "t1"
+        assert runtime.context["agent_name"] == "test-agent-1"
 
     def test_custom_mode_is_normalized_to_string(self, client):
         """stream() forwards custom events even when the mode is not a plain string."""

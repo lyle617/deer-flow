@@ -31,6 +31,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.runtime import Runtime
 
 from deerflow.agents.lead_agent.agent import _build_middlewares
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
@@ -582,6 +583,10 @@ class DeerFlowClient:
             context["agent_name"] = self._agent_name
         if isinstance(runtime_context, dict):
             context.update(runtime_context)
+        stream_config = dict(config)
+        stream_config.setdefault("configurable", {})["__pregel_runtime"] = Runtime(
+            context=context,
+        )
 
         seen_ids: set[str] = set()
         # Cross-mode handoff: ids already streamed via LangGraph ``messages``
@@ -622,8 +627,7 @@ class DeerFlowClient:
 
         for item in self._agent.stream(
             state,
-            config=config,
-            context=context,
+            config=stream_config,
             stream_mode=["values", "messages", "custom"],
         ):
             if isinstance(item, tuple) and len(item) == 2:
